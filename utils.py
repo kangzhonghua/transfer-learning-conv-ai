@@ -11,7 +11,7 @@ import socket
 
 import torch
 
-from pytorch_transformers import cached_path
+from transformers import cached_path
 
 PERSONACHAT_URL = "https://s3.amazonaws.com/datasets.huggingface.co/personachat/personachat_self_original.json"
 HF_FINETUNED_MODEL = "https://s3.amazonaws.com/models.huggingface.co/transfer-learning-chatbot/gpt_personachat_cache.tar.gz"
@@ -70,7 +70,8 @@ def get_dataset_personalities(tokenizer, dataset_path, dataset_cache=None):
         logger.info("Tokenize and encode the dataset")
         def tokenize(obj):
             if isinstance(obj, str):
-                return tokenizer.convert_tokens_to_ids(tokenizer.tokenize(obj))
+                ids = tokenizer.convert_tokens_to_ids(tokenizer.tokenize(obj))
+                return ids
             if isinstance(obj, dict):
                 return dict((n, tokenize(o)) for n, o in obj.items())
             return list(tokenize(o) for o in obj)

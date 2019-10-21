@@ -7,25 +7,52 @@ from pprint import pformat
 from argparse import ArgumentParser
 from collections import defaultdict
 from itertools import chain
+import json
 
 import torch
 from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader, TensorDataset
+
 from ignite.engine import Engine, Events
 from ignite.handlers import ModelCheckpoint
 from ignite.metrics import Accuracy, Loss, MetricsLambda, RunningAverage
 from ignite.contrib.handlers import ProgressBar, PiecewiseLinear
 from ignite.contrib.handlers.tensorboard_logger import TensorboardLogger, OutputHandler, OptimizerParamsHandler
-from pytorch_transformers import (AdamW, OpenAIGPTDoubleHeadsModel, OpenAIGPTTokenizer,
-                                  GPT2DoubleHeadsModel, GPT2Tokenizer, WEIGHTS_NAME, CONFIG_NAME)
+
+#from transformers import (AdamW, GPT2DoubleHeadsModel, GPT2Tokenizer, WEIGHTS_NAME, CONFIG_NAME)
+from transformers import GPT2DoubleHeadsModel, GPT2Tokenizer,AdamW,WEIGHTS_NAME, CONFIG_NAME
+
+
+
+import sys
+sys.path.insert(0, '../transformers/examples/')
+
+from tokenization_cn import GPT2Tokenizer_cn
 
 from utils import get_dataset, make_logdir
 
+
+
 SPECIAL_TOKENS = ["<bos>", "<eos>", "<speaker1>", "<speaker2>", "<pad>"]
-ATTR_TO_SPECIAL_TOKEN = {'bos_token': '<bos>', 'eos_token': '<eos>', 'pad_token': '<pad>',
-                         'additional_special_tokens': ('<speaker1>', '<speaker2>')}
-MODEL_INPUTS = ["input_ids", "mc_token_ids", "lm_labels", "mc_labels", "token_type_ids"]
-PADDED_INPUTS = ["input_ids", "lm_labels", "token_type_ids"]
+
+
+ATTR_TO_SPECIAL_TOKEN = {'additional_special_tokens': ('<speaker1>', '<speaker2>')}
+
+
+MODEL_INPUTS = ["input_ids",
+                "mc_token_ids",
+                "lm_labels",
+                "mc_labels",
+                "token_type_ids"]
+
+PADDED_INPUTS = ["input_ids",
+                 "lm_labels",
+                 "token_type_ids"]
+
+MODEL_CLASSES = {
+    'gpt2': (GPT2DoubleHeadsModel, GPT2Tokenizer),
+    'gpt2_cn': (GPT2DoubleHeadsModel, GPT2Tokenizer_cn),
+}
 
 logger = logging.getLogger(__file__)
 
@@ -48,12 +75,16 @@ def pad_dataset(dataset, padding=0):
 
 def add_special_tokens_(model, tokenizer):
     """ Add special tokens to the tokenizer and the model if they have not already been added. """
-    orig_num_tokens = len(tokenizer.encoder)
+    orig_num_tokens = len(tokenizer)
     num_added_tokens = tokenizer.add_special_tokens(
         ATTR_TO_SPECIAL_TOKEN)  # returns 0 and doesn't add if they are already there
-    if num_added_tokens > 0:
+
+    new_num_tokens = orig_num_tokens + num_added_tokens
+
+    if new_num_tokens > model.config.vocab_size:
         model.resize_token_embeddings(
-            new_num_tokens=orig_num_tokens + num_added_tokens)
+            new_num_tokens=new_num_tokens)
+
 
 def build_input_from_segments(persona, history, reply, tokenizer, lm_labels=False, with_eos=True):
     """ Build a sequence of input from 3 segments: persona, history and last reply. """
@@ -72,10 +103,11 @@ def build_input_from_segments(persona, history, reply, tokenizer, lm_labels=Fals
     return instance, sequence  # TODO: second arg is never used, delete it
 
 
+
 def get_data_loaders(args, tokenizer):
     """ Prepare the dataset for training and evaluation """
     personachat = get_dataset(tokenizer, args.dataset_path, args.dataset_cache)
-
+    too_long_dataset = 0
     logger.info("Build inputs and labels")
     datasets = {"train": defaultdict(list), "valid": defaultdict(list)}
     for dataset_name, dataset in personachat.items():
@@ -90,22 +122,32 @@ def get_data_loaders(args, tokenizer):
                     for j, candidate in enumerate(utterance["candidates"][-num_candidates:]):
                         lm_labels = bool(j == num_candidates-1)
                         instance, _ = build_input_from_segments(persona, history, candidate, tokenizer, lm_labels)
+                        
                         for input_name, input_array in instance.items():
                             datasets[dataset_name][input_name].append(input_array)
                     datasets[dataset_name]["mc_labels"].append(num_candidates - 1)
                     datasets[dataset_name]["n_candidates"] = num_candidates
-                persona = [persona[-1]] + persona[:-1]  # permuted personalities
+                persona = [persona[-1]] + persona[:-1]  # permuted personalities 重新排序personality
 
+    
+    #with open("debug.dump", "w", encoding='utf8') as output_file:
+    #    json.dump(datasets, output_file,ensure_ascii=False, indent=4, separators=(',', ': '))
+    
     logger.info("Pad inputs and convert to Tensor")
     tensor_datasets = {"train": [], "valid": []}
+                                        
     for dataset_name, dataset in datasets.items():
-        dataset = pad_dataset(dataset, padding=tokenizer.convert_tokens_to_ids(SPECIAL_TOKENS[-1]))
-        for input_name in MODEL_INPUTS:
+        dataset = pad_dataset(dataset, padding=tokenizer.convert_tokens_to_ids(SPECIAL_TOKENS[-1]))      
+
+        for input_name in MODEL_INPUTS:            
             tensor = torch.tensor(dataset[input_name])
+            
             if input_name != "mc_labels":
                 tensor = tensor.view((-1, datasets[dataset_name]["n_candidates"]) + tensor.shape[1:])
+                
+            #print(tensor.shape)
             tensor_datasets[dataset_name].append(tensor)
-
+        
     logger.info("Build train and validation dataloaders")
     train_dataset, valid_dataset = TensorDataset(*tensor_datasets["train"]), TensorDataset(*tensor_datasets["valid"])
     train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset) if args.distributed else None
@@ -117,9 +159,35 @@ def get_data_loaders(args, tokenizer):
     logger.info("Valid dataset (Batch, Candidates, Seq length): {}".format(valid_dataset.tensors[0].shape))
     return train_loader, valid_loader, train_sampler, valid_sampler
 
+def initialize_distributed(args):
+    """Initialize torch.distributed."""
+
+    print("initialize_distributed\n")
+    
+    rank = int(os.getenv('RANK', '0'))
+    world_size = int(os.getenv("WORLD_SIZE", '1'))
+
+    # Manually set the device ids.
+    device = rank % torch.cuda.device_count()
+    if args.local_rank is not None:
+        device = args.local_rank
+    torch.cuda.set_device(device)
+    # Call the init process
+    init_method = 'tcp://'
+    master_ip = os.getenv('MASTER_ADDR', 'localhost')
+    master_port = os.getenv('MASTER_PORT', '6000')
+    init_method += master_ip + ':' + master_port
+    torch.distributed.init_process_group(
+        backend="nccl",
+        world_size=world_size, rank=rank,
+        init_method=init_method)
+
 
 def train():
     parser = ArgumentParser()
+    parser.add_argument("--model_type", default="",type=str, required=True,
+                        help="Model type selected in the list: " + ", ".join(MODEL_CLASSES.keys()))
+
     parser.add_argument("--dataset_path", type=str, default="", help="Path or url of the dataset. If empty download from S3.")
     parser.add_argument("--dataset_cache", type=str, default='./dataset_cache', help="Path or url of the dataset cache")
     parser.add_argument("--model_checkpoint", type=str, default="openai-gpt", help="Path, url or short name of the model")
@@ -137,7 +205,7 @@ def train():
     parser.add_argument("--eval_before_start", action='store_true', help="If true start with a first evaluation before training")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu", help="Device (cuda or cpu)")
     parser.add_argument("--fp16", type=str, default="", help="Set to O0, O1, O2 or O3 for fp16 training (see apex documentation)")
-    parser.add_argument("--local_rank", type=int, default=-1, help="Local rank for distributed training (-1: not distributed)")
+    parser.add_argument("--local_rank", type=int, default=0, help="Local rank for distributed training (-1: not distributed)")
     args = parser.parse_args()
 
     # logging is set to INFO (resp. WARN) for main (resp. auxiliary) process. logger.info => log main process only, logger.warning => log all processes
@@ -147,18 +215,23 @@ def train():
 
     # Initialize distributed training if needed
     args.distributed = (args.local_rank != -1)
+    """
+    args.distributed = (args.local_rank != -1)
     if args.distributed:
         torch.cuda.set_device(args.local_rank)
         args.device = torch.device("cuda", args.local_rank)
         torch.distributed.init_process_group(backend='nccl', init_method='env://')
+    """
+    initialize_distributed(args)
 
     logger.info("Prepare tokenizer, pretrained model and optimizer.")
-    tokenizer_class = GPT2Tokenizer if "gpt2" in args.model_checkpoint else OpenAIGPTTokenizer # cant use Autotokenizer because checkpoint could be a Path
+
+
+    args.model_type = args.model_type.lower()
+    model_class, tokenizer_class = MODEL_CLASSES[args.model_type]
     tokenizer = tokenizer_class.from_pretrained(args.model_checkpoint)
-
-
-    model_class = GPT2DoubleHeadsModel if "gpt2" in args.model_checkpoint else OpenAIGPTDoubleHeadsModel
     model = model_class.from_pretrained(args.model_checkpoint)
+
     model.to(args.device)
     # Add special tokens if they are not already added
     add_special_tokens_(model, tokenizer)
@@ -176,9 +249,11 @@ def train():
 
     # Training function and trainer
     def update(engine, batch):
+        
         model.train()
         batch = tuple(input_tensor.to(args.device) for input_tensor in batch)
         input_ids, mc_token_ids, lm_labels, mc_labels, token_type_ids = batch
+        
         (lm_loss), (mc_loss), *_ = model(
             input_ids, token_type_ids=token_type_ids, mc_token_ids=mc_token_ids,
             mc_labels=mc_labels, lm_labels=lm_labels
