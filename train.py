@@ -148,7 +148,6 @@ def get_data_loaders(args, tokenizer):
             for input_name in MODEL_INPUTS:
                 tensor = torch.tensor(dataset[input_name])
                 #tensor = torch.tensor(dataset[input_name], dtype=torch.int16)
-                #########333
 
                 if input_name != "mc_labels":
                     tensor = tensor.view((-1, datasets[dataset_name]["n_candidates"]) + tensor.shape[1:])
@@ -253,9 +252,10 @@ def train():
     if args.fp16:
         from apex import amp  # Apex is only required if we use fp16 training
         model, optimizer = amp.initialize(model, optimizer, opt_level=args.fp16)
+        model.half()
     if args.distributed:
         model = DistributedDataParallel(model, device_ids=[args.local_rank], output_device=args.local_rank)
-
+        #model = torch.nn.DataParallel(model)
     logger.info("Prepare datasets")
     train_loader, val_loader, train_sampler, valid_sampler = get_data_loaders(args, tokenizer)
 
