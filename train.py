@@ -106,48 +106,60 @@ def build_input_from_segments(persona, history, reply, tokenizer, lm_labels=Fals
 
 def get_data_loaders(args, tokenizer):
     """ Prepare the dataset for training and evaluation """
-    personachat = get_dataset(tokenizer, args.dataset_path, args.dataset_cache)
-    too_long_dataset = 0
-    logger.info("Build inputs and labels")
-    datasets = {"train": defaultdict(list), "valid": defaultdict(list)}
-    for dataset_name, dataset in personachat.items():
-        num_candidates = len(dataset[0]["utterances"][0]["candidates"])
-        if args.num_candidates > 0 and dataset_name == 'train':
-            num_candidates = min(args.num_candidates, num_candidates)
-        for dialog in dataset:
-            persona = dialog["personality"].copy()
-            for _ in range(args.personality_permutations):
-                for utterance in dialog["utterances"]:
-                    history = utterance["history"][-(2*args.max_history+1):]
-                    for j, candidate in enumerate(utterance["candidates"][-num_candidates:]):
-                        lm_labels = bool(j == num_candidates-1)
-                        instance, _ = build_input_from_segments(persona, history, candidate, tokenizer, lm_labels)
-                        
-                        for input_name, input_array in instance.items():
-                            datasets[dataset_name][input_name].append(input_array)
-                    datasets[dataset_name]["mc_labels"].append(num_candidates - 1)
-                    datasets[dataset_name]["n_candidates"] = num_candidates
-                persona = [persona[-1]] + persona[:-1]  # permuted personalities 重新排序personality
+    if (not os.path.isfile("debug.tensor.dump")):
+        if(not os.path.isfile("debug.dump")):
+            personachat = get_dataset(tokenizer, args.dataset_path, args.dataset_cache)
+            too_long_dataset = 0
+            logger.info("Build inputs and labels")
+            datasets = {"train": defaultdict(list), "valid": defaultdict(list)}
+            for dataset_name, dataset in personachat.items():
+                num_candidates = len(dataset[0]["utterances"][0]["candidates"])
+                if args.num_candidates > 0 :#and dataset_name == 'train':
+                    num_candidates = min(args.num_candidates, num_candidates)
+                for dialog in dataset:
+                    persona = dialog["personality"].copy()
+                    for _ in range(args.personality_permutations):
+                        for utterance in dialog["utterances"]:
+                            history = utterance["history"][-(2*args.max_history+1):]
+                            for j, candidate in enumerate(utterance["candidates"][-num_candidates:]):
+                                lm_labels = bool(j == num_candidates-1)
+                                instance, _ = build_input_from_segments(persona, history, candidate, tokenizer, lm_labels)
 
-    
-    #with open("debug.dump", "w", encoding='utf8') as output_file:
-    #    json.dump(datasets, output_file,ensure_ascii=False, indent=4, separators=(',', ': '))
-    
+                                for input_name, input_array in instance.items():
+                                    datasets[dataset_name][input_name].append(input_array)
+                            datasets[dataset_name]["mc_labels"].append(num_candidates - 1)
+                            datasets[dataset_name]["n_candidates"] = num_candidates
+                        persona = [persona[-1]] + persona[:-1]  # permuted personalities 重新排序personality
+
+
+            with open("debug.dump", "w", encoding='utf8') as output_file:
+                json.dump(datasets, output_file,ensure_ascii=False, indent=4, separators=(',', ': '))
+        else:
+            with open("debug.dump", "r", encoding='utf8') as input_file:
+                datasets = json.load(input_file)
+
     logger.info("Pad inputs and convert to Tensor")
     tensor_datasets = {"train": [], "valid": []}
-                                        
-    for dataset_name, dataset in datasets.items():
-        dataset = pad_dataset(dataset, padding=tokenizer.convert_tokens_to_ids(SPECIAL_TOKENS[-1]))      
 
-        for input_name in MODEL_INPUTS:            
-            tensor = torch.tensor(dataset[input_name])
-            
-            if input_name != "mc_labels":
-                tensor = tensor.view((-1, datasets[dataset_name]["n_candidates"]) + tensor.shape[1:])
-                
-            #print(tensor.shape)
-            tensor_datasets[dataset_name].append(tensor)
-        
+    if (not os.path.isfile("debug.tensor.dump")):
+        for dataset_name, dataset in datasets.items():
+            dataset = pad_dataset(dataset, padding=tokenizer.convert_tokens_to_ids(SPECIAL_TOKENS[-1]))
+
+            for input_name in MODEL_INPUTS:
+                tensor = torch.tensor(dataset[input_name])
+                #tensor = torch.tensor(dataset[input_name], dtype=torch.int16)
+                #########333
+
+                if input_name != "mc_labels":
+                    tensor = tensor.view((-1, datasets[dataset_name]["n_candidates"]) + tensor.shape[1:])
+
+                #print(tensor.shape)
+                tensor_datasets[dataset_name].append(tensor)
+
+        torch.save(tensor_datasets, 'debug.tensor.dump')
+    else:
+        tensor_datasets = torch.load("debug.tensor.dump")
+
     logger.info("Build train and validation dataloaders")
     train_dataset, valid_dataset = TensorDataset(*tensor_datasets["train"]), TensorDataset(*tensor_datasets["valid"])
     train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset) if args.distributed else None
@@ -278,7 +290,7 @@ def train():
         with torch.no_grad():
             batch = tuple(input_tensor.to(args.device) for input_tensor in batch)
             input_ids, mc_token_ids, lm_labels, mc_labels, token_type_ids = batch
-            logger.info(tokenizer.decode(input_ids[0, -1, :].tolist()))
+            #logger.info(tokenizer.decode(input_ids[0, -1, :].tolist()))
             # if we dont send labels to model, it doesnt return losses
             lm_logits, mc_logits, *_ = model(
                 input_ids, token_type_ids=token_type_ids, mc_token_ids=mc_token_ids,

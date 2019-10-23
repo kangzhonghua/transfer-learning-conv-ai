@@ -12,12 +12,24 @@ import warnings
 import torch
 import torch.nn.functional as F
 
-from transformers import GPT2Config, OpenAIGPTConfig
-from transformers import GPT2LMHeadModel, GPT2Tokenizer
-from transformers import OpenAIGPTLMHeadModel, OpenAIGPTTokenizer
+#from transformers import GPT2Config, OpenAIGPTConfig
+#from transformers import GPT2LMHeadModel, GPT2Tokenizer
+#from transformers import OpenAIGPTLMHeadModel, OpenAIGPTTokenizer
+
+from transformers import GPT2DoubleHeadsModel, GPT2Tokenizer,AdamW,WEIGHTS_NAME, CONFIG_NAME
 
 from train import SPECIAL_TOKENS, build_input_from_segments, add_special_tokens_
 from utils import get_dataset_personalities, download_pretrained_model
+
+import sys
+sys.path.insert(0, '../transformers/examples/')
+
+from tokenization_cn import GPT2Tokenizer_cn
+
+MODEL_CLASSES = {
+    'gpt2': (GPT2DoubleHeadsModel, GPT2Tokenizer),
+    'gpt2_cn': (GPT2DoubleHeadsModel, GPT2Tokenizer_cn),
+}
 
 def top_filtering(logits, top_k=0, top_p=0.0, threshold=-float('Inf'), filter_value=-float('Inf')):
     """ Filter a distribution of logits using top-k, top-p (nucleus) and/or threshold filtering
@@ -59,7 +71,10 @@ def top_filtering(logits, top_k=0, top_p=0.0, threshold=-float('Inf'), filter_va
 
 
 def sample_sequence(personality, history, tokenizer, model, args, current_output=None):
+    #SPECIAL_TOKENS = ["<bos>", "<eos>", "<speaker1>", "<speaker2>", "<pad>"]
+    special_tokens_ids=[2,1,32008,32009,0]
     special_tokens_ids = tokenizer.convert_tokens_to_ids(SPECIAL_TOKENS)
+    print(special_tokens_ids)
     if current_output is None:
         current_output = []
 
@@ -92,9 +107,13 @@ def sample_sequence(personality, history, tokenizer, model, args, current_output
 
 def run():
     parser = ArgumentParser()
+
+    parser.add_argument("--model_type", default="",type=str, required=True,
+                        help="Model type selected in the list: " + ", ".join(MODEL_CLASSES.keys()))
+
     parser.add_argument("--dataset_path", type=str, default="", help="Path or url of the dataset. If empty download from S3.")
     parser.add_argument("--dataset_cache", type=str, default='./dataset_cache', help="Path or url of the dataset cache")
-    parser.add_argument("--model", type=str, default="gpt", help="Model type (gpt or gpt2)")
+    #parser.add_argument("--model", type=str, default="gpt", help="Model type (gpt or gpt2)")
     parser.add_argument("--model_checkpoint", type=str, default="", help="Path, url or short name of the model")
     parser.add_argument("--max_history", type=int, default=2, help="Number of previous utterances to keep in history")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu", help="Device (cuda or cpu)")
@@ -103,7 +122,7 @@ def run():
     parser.add_argument("--max_length", type=int, default=20, help="Maximum length of the output utterances")
     parser.add_argument("--min_length", type=int, default=1, help="Minimum length of the output utterances")
     parser.add_argument("--seed", type=int, default=42, help="Seed")
-    parser.add_argument("--temperature", type=int, default=0.7, help="Sampling softmax temperature")
+    parser.add_argument("--temperature", type=float, default=0.7, help="Sampling softmax temperature")
     parser.add_argument("--top_k", type=int, default=0, help="Filter top-k tokens before sampling (<=0: no filtering)")
     parser.add_argument("--top_p", type=float, default=0.9, help="Nucleus filtering (top-p) before sampling (<=0.0: no filtering)")
     args = parser.parse_args()
@@ -120,10 +139,19 @@ def run():
     torch.cuda.manual_seed(args.seed)
 
     logger.info("Get pretrained model and tokenizer")
-    tokenizer_class = GPT2Tokenizer if "gpt2" == args.model else OpenAIGPTTokenizer
+
+    #tokenizer_class = GPT2Tokenizer if "gpt2" == args.model else OpenAIGPTTokenizer
+    #tokenizer = tokenizer_class.from_pretrained(args.model_checkpoint)
+    #model_class = GPT2LMHeadModel if "gpt2" == args.model else OpenAIGPTLMHeadModel
+    #model = model_class.from_pretrained(args.model_checkpoint)
+
+    args.model_type = args.model_type.lower()
+    model_class, tokenizer_class = MODEL_CLASSES[args.model_type]
+    logger.info("load tokenizer....\n")
     tokenizer = tokenizer_class.from_pretrained(args.model_checkpoint)
-    model_class = GPT2LMHeadModel if "gpt2" == args.model else OpenAIGPTLMHeadModel
+    logger.info("load model....\n")
     model = model_class.from_pretrained(args.model_checkpoint)
+
     model.to(args.device)
     add_special_tokens_(model, tokenizer)
 
