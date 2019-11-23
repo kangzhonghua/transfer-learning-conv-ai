@@ -27,7 +27,7 @@ from transformers import GPT2DoubleHeadsModel, GPT2Tokenizer,AdamW,WEIGHTS_NAME,
 import sys
 sys.path.insert(0, '../transformers/examples/')
 
-from tokenization_cn import GPT2Tokenizer_cn
+from tokenization_cn import GPT2Tokenizer_cn,GPT2BPETokenizer_CN
 
 from utils import get_dataset, make_logdir
 
@@ -52,6 +52,7 @@ PADDED_INPUTS = ["input_ids",
 MODEL_CLASSES = {
     'gpt2': (GPT2DoubleHeadsModel, GPT2Tokenizer),
     'gpt2_cn': (GPT2DoubleHeadsModel, GPT2Tokenizer_cn),
+    'gpt2_bpe_cn': (GPT2DoubleHeadsModel, GPT2BPETokenizer_CN),
 }
 
 logger = logging.getLogger(__file__)
