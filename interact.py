@@ -72,7 +72,7 @@ def top_filtering(logits, top_k=0, top_p=0.0, threshold=-float('Inf'), filter_va
 
 def sample_sequence(personality, history, tokenizer, model, args, current_output=None):
     #SPECIAL_TOKENS = ["<bos>", "<eos>", "<speaker1>", "<speaker2>", "<pad>"]
-    special_tokens_ids=[2,1,32008,32009,0]
+    #special_tokens_ids=[2,1,32008,32009,0]
     special_tokens_ids = tokenizer.convert_tokens_to_ids(SPECIAL_TOKENS)
     print(special_tokens_ids)
     if current_output is None:

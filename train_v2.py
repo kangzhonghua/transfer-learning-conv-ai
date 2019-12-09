@@ -33,11 +33,17 @@ from utils import get_dataset, make_logdir
 
 
 
-SPECIAL_TOKENS = ["<bos>", "<eos>", "<speaker1>", "<speaker2>", "<pad>"]
+#SPECIAL_TOKENS = ["<bos>", "<eos>", "<speaker1>", "<speaker2>", "<pad>"]
 
 
-ATTR_TO_SPECIAL_TOKEN = {'additional_special_tokens': ('<speaker1>', '<speaker2>')}
+#ATTR_TO_SPECIAL_TOKEN = {'additional_special_tokens': ('<speaker1>', '<speaker2>')}
 
+SPECIAL_TOKENS = ["<convai_bos>", "<convai_eos>", "<speaker1>", "<speaker2>", "<convai_pad>"]
+
+
+#ATTR_TO_SPECIAL_TOKEN = {'additional_special_tokens': ('<speaker1>', '<speaker2>')}
+ATTR_TO_SPECIAL_TOKEN = {'bos_token': '<convai_bos>', 'eos_token': '<convai_eos>', 'pad_token': '<convai_pad>',
+                         'additional_special_tokens': ('<speaker1>', '<speaker2>')}
 
 
 MODEL_INPUTS = ["input_ids",
