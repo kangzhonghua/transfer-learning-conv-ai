@@ -33,12 +33,12 @@ from utils import get_dataset, make_logdir
 
 
 
-SPECIAL_TOKENS = ["<bos>", "<eos>", "<speaker1>", "<speaker2>", "<pad>"]
+SPECIAL_TOKENS = ["<convai_bos>", "<convai_eos>", "<speaker1>", "<speaker2>", "<pad>"]
 
 
-ATTR_TO_SPECIAL_TOKEN = {'additional_special_tokens': ('<speaker1>', '<speaker2>')}
-
-
+#ATTR_TO_SPECIAL_TOKEN = {'additional_special_tokens': ('<speaker1>', '<speaker2>')}
+ATTR_TO_SPECIAL_TOKEN = {'bos_token': '<convai_bos>', 'eos_token': '<convai_eos>', 'pad_token': '<pad>',
+                         'additional_special_tokens': ('<speaker1>', '<speaker2>')}
 
 MODEL_INPUTS = ["input_ids",
                 "mc_token_ids",
@@ -52,7 +52,7 @@ PADDED_INPUTS = ["input_ids",
 
 MODEL_CLASSES = {
     'gpt2': (GPT2DoubleHeadsModel, GPT2Tokenizer),
-    #'gpt2_cn': (GPT2DoubleHeadsModel, GPT2Tokenizer_cn),
+    'gpt2_cn': (GPT2DoubleHeadsModel, GPT2Tokenizer_cn),
     'gpt2_bpe_cn': (GPT2DoubleHeadsModel, GPT2BPETokenizer_CN),
 }
 
@@ -86,12 +86,15 @@ def add_special_tokens_(model, tokenizer):
     if new_num_tokens > model.config.vocab_size:
         model.resize_token_embeddings(
             new_num_tokens=new_num_tokens)
-
-
+        logger.info(f"resize_token_embeddings:{new_num_tokens}")
+    convai_bos, convai_eos, speaker1, speaker2,convai_pad = tokenizer.convert_tokens_to_ids(SPECIAL_TOKENS)
+    print(f"SPECIAL_TOKENS convai_bos:{convai_bos}, convai_eos{convai_eos},convai_pad:{convai_pad}, speaker1:{speaker1}, speaker2:{speaker2}")
+    
 def build_input_from_segments(persona, history, reply, tokenizer, lm_labels=False, with_eos=True):
     """ Build a sequence of input from 3 segments: persona, history and last reply. """
     bos, eos, speaker1, speaker2 = tokenizer.convert_tokens_to_ids(SPECIAL_TOKENS[:-1])
-
+    #print("SPECIAL_TOKENS:",bos, eos, speaker1, speaker2)
+    
     instance = {}
     sequence = [[bos] + list(chain(*persona))] + history + [reply + ([eos] if with_eos else [])]
     sequence = [sequence[0]] + [[speaker2 if (len(sequence)-i) % 2 else speaker1] + s for i, s in enumerate(sequence[1:])]
@@ -108,8 +111,15 @@ def build_input_from_segments(persona, history, reply, tokenizer, lm_labels=Fals
 
 def get_data_loaders(args, tokenizer):
     """ Prepare the dataset for training and evaluation """
-    if (not os.path.isfile("debug.tensor.dump")):
-        if(not os.path.isfile("debug.dump")):
+    tmp_dir = "/public/transfer-learning-conv-ai/tmp"
+    if not os.path.exists(tmp_dir):
+        os.makedirs(tmp_dir)
+    
+    save_inputs_name = os.path.join(tmp_dir,"debug.dump")
+    save_tensors_name = os.path.join(tmp_dir,"debug.tensor.dump")
+    
+    if (not os.path.isfile(save_tensors_name)):
+        if(not os.path.isfile(save_inputs_name)):
             personachat = get_dataset(tokenizer, args.dataset_path, args.dataset_cache)
             too_long_dataset = 0
             logger.info("Build inputs and labels")
@@ -132,18 +142,20 @@ def get_data_loaders(args, tokenizer):
                             datasets[dataset_name]["mc_labels"].append(num_candidates - 1)
                             datasets[dataset_name]["n_candidates"] = num_candidates
                         persona = [persona[-1]] + persona[:-1]  # permuted personalities 重新排序personality
-
-
-            with open("debug.dump", "w", encoding='utf8') as output_file:
+            
+            
+            logger.info(f"save {save_inputs_name} inputs and labels")
+            with open(save_inputs_name, "w", encoding='utf8') as output_file:
                 json.dump(datasets, output_file,ensure_ascii=False, indent=4, separators=(',', ': '))
         else:
-            with open("debug.dump", "r", encoding='utf8') as input_file:
+            logger.info(f"load {save_inputs_name} inputs and labels")
+            with open(save_inputs_name, "r", encoding='utf8') as input_file:
                 datasets = json.load(input_file)
 
     logger.info("Pad inputs and convert to Tensor")
     tensor_datasets = {"train": [], "valid": []}
 
-    if (not os.path.isfile("debug.tensor.dump")):
+    if (not os.path.isfile(save_tensors_name)):
         for dataset_name, dataset in datasets.items():
             dataset = pad_dataset(dataset, padding=tokenizer.convert_tokens_to_ids(SPECIAL_TOKENS[-1]))
 
@@ -156,10 +168,12 @@ def get_data_loaders(args, tokenizer):
 
                 #print(tensor.shape)
                 tensor_datasets[dataset_name].append(tensor)
-
-        torch.save(tensor_datasets, 'debug.tensor.dump')
+        
+        logger.info(f"save tensor {save_tensors_name}")
+        torch.save(tensor_datasets, save_tensors_name)
     else:
-        tensor_datasets = torch.load("debug.tensor.dump")
+        logger.info(f"load tensor {save_tensors_name}")
+        tensor_datasets = torch.load(save_tensors_name)
 
     logger.info("Build train and validation dataloaders")
     train_dataset, valid_dataset = TensorDataset(*tensor_datasets["train"]), TensorDataset(*tensor_datasets["valid"])
@@ -342,7 +356,7 @@ def train():
         tb_logger.attach(trainer, log_handler=OptimizerParamsHandler(optimizer), event_name=Events.ITERATION_STARTED)
         tb_logger.attach(evaluator, log_handler=OutputHandler(tag="validation", metric_names=list(metrics.keys()), another_engine=trainer), event_name=Events.EPOCH_COMPLETED)
 
-        checkpoint_handler = ModelCheckpoint(log_dir, 'checkpoint', save_interval=1, n_saved=3)
+        checkpoint_handler = ModelCheckpoint(log_dir, 'checkpoint', save_interval=1, n_saved=10)
         trainer.add_event_handler(Events.EPOCH_COMPLETED, checkpoint_handler, {'mymodel': getattr(model, 'module', model)})  # "getattr" takes care of distributed encapsulation
 
         torch.save(args, log_dir + '/model_training_args.bin')
